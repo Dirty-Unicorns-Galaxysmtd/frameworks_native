@@ -201,12 +201,23 @@ void do_dmesg() {
 }
 
 void do_showmap(int pid, const char *name) {
+    static bool ran = false, skip = false;
     char title[255];
     char arg[255];
 
     sprintf(title, "SHOW MAP %d (%s)", pid, name);
     sprintf(arg, "%d", pid);
-    run_command(title, 10, SU_PATH, "root", "showmap", arg, NULL);
+
+    if (skip) {
+        /* Skip due to non-zero exit status on first run. */
+        printf("------ %s: Skipped. ------\n", title);
+    } else {
+        int status = run_command(title, 10, SU_PATH, "root", "showmap", arg, NULL);
+        if (!ran) {
+            ran  = true;
+            skip = !WIFEXITED(status) || WEXITSTATUS(status) != 0;
+        }
+    }
 }
 
 /* prints the contents of a file */
@@ -253,7 +264,7 @@ int dump_file(const char *title, const char* path) {
 /* forks a command and waits for it to finish */
 int run_command(const char *title, int timeout_seconds, const char *command, ...) {
     fflush(stdout);
-    clock_t start = clock();
+    time_t start = time(NULL);
     pid_t pid = fork();
 
     /* handle error case */
@@ -265,7 +276,21 @@ int run_command(const char *title, int timeout_seconds, const char *command, ...
     /* handle child case */
     if (pid == 0) {
         const char *args[1024] = {command};
-        size_t arg;
+        size_t arg = 1;
+        char sucmd[255];
+        bool su = false;
+
+        if (strcmp(command, SU_PATH) == 0) {
+            /* Need to transform calls to su from:
+             *   su LOGIN COMMAND ...
+             * to:
+             *   su -c 'COMMAND "$@"' -- LOGIN COMMAND ... */
+            args[arg++] = "-c";
+            args[arg++] = sucmd;
+            args[arg++] = "--";
+            sucmd[0] = '\0';
+            su = true;
+        }
 
         /* make sure the child dies when dumpstate dies */
         prctl(PR_SET_PDEATHSIG, SIGKILL);
@@ -273,9 +298,10 @@ int run_command(const char *title, int timeout_seconds, const char *command, ...
         va_list ap;
         va_start(ap, command);
         if (title) printf("------ %s (%s", title, command);
-        for (arg = 1; arg < sizeof(args) / sizeof(args[0]); ++arg) {
+        for (; arg < sizeof(args) / sizeof(args[0]); ++arg) {
             args[arg] = va_arg(ap, const char *);
             if (args[arg] == NULL) break;
+            if (su && arg == 5) snprintf(sucmd, sizeof(sucmd), "%s \"$@\"", args[arg]);
             if (title) printf(" %s", args[arg]);
         }
         if (title) printf(") ------\n");
@@ -291,19 +317,19 @@ int run_command(const char *title, int timeout_seconds, const char *command, ...
     for (;;) {
         int status;
         pid_t p = waitpid(pid, &status, WNOHANG);
-        float elapsed = (float) (clock() - start) / CLOCKS_PER_SEC;
+        time_t elapsed = time(NULL) - start;
         if (p == pid) {
             if (WIFSIGNALED(status)) {
                 printf("*** %s: Killed by signal %d\n", command, WTERMSIG(status));
             } else if (WIFEXITED(status) && WEXITSTATUS(status) > 0) {
                 printf("*** %s: Exit code %d\n", command, WEXITSTATUS(status));
             }
-            if (title) printf("[%s: %.1fs elapsed]\n\n", command, elapsed);
+            if (title) printf("[%s: %ds elapsed]\n\n", command, (int) elapsed);
             return status;
         }
 
         if (timeout_seconds && elapsed > timeout_seconds) {
-            printf("*** %s: Timed out after %.1fs (killing pid %d)\n", command, elapsed, pid);
+            printf("*** %s: Timed out after %ds (killing pid %d)\n", command, (int) elapsed, pid);
             kill(pid, SIGTERM);
             return -1;
         }
@@ -469,7 +495,7 @@ const char *dump_traces() {
         if (!mkdir(anr_traces_dir, 0775)) {
             chown(anr_traces_dir, AID_SYSTEM, AID_SYSTEM);
             chmod(anr_traces_dir, 0775);
-            if (selinux_android_restorecon(anr_traces_dir) == -1) {
+            if (selinux_android_restorecon(anr_traces_dir, 0) == -1) {
                 fprintf(stderr, "restorecon failed for %s: %s\n", anr_traces_dir, strerror(errno));
             }
         } else if (errno != EEXIST) {
