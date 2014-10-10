@@ -16,9 +16,6 @@
 
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
-// Uncomment this to remove support for HWC_DEVICE_API_VERSION_0_3 and older
-// #define HWC_REMOVE_DEPRECATED_VERSIONS 1
-
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,32 +50,7 @@
 
 namespace android {
 
-#ifndef OLD_HWC_API
 #define MIN_HWC_HEADER_VERSION HWC_HEADER_VERSION
-#endif
-
-#ifdef OLD_HWC_API
-// ---------------------------------------------------------------------------
-// Support for HWC_DEVICE_API_VERSION_0_3 and older:
-// Since v0.3 is deprecated and support will be dropped soon, as much as
-// possible the code is written to target v1.0. When using a v0.3 HWC, we
-// allocate v0.3 structures, but assign them to v1.0 pointers.
-
-#if HWC_REMOVE_DEPRECATED_VERSIONS
-// We need complete types to satisfy semantic checks, even though the code
-// paths that use these won't get executed at runtime (and will likely be dead-
-// code-eliminated). When we remove the code to support v0.3 we can remove
-// these as well.
-typedef hwc_layer_1_t hwc_layer_t;
-typedef hwc_display_contents_1_t hwc_layer_list_t;
-typedef hwc_composer_device_1_t hwc_composer_device_t;
-#endif
-
-// This function assumes we've already rejected HWC's with lower-than-required
-// versions. Don't use it for the initial "does HWC meet requirements" check!
-
-#define MIN_HWC_HEADER_VERSION 0
-#endif
 
 static uint32_t hwcApiVersion(const hwc_composer_device_1_t* hwc) {
     uint32_t hwcVersion = hwc->common.version;
@@ -639,48 +611,6 @@ void HWComposer::eventControl(int disp, int event, int enabled) {
         return;
     }
     status_t err = NO_ERROR;
-#ifdef OLD_HWC_API
-    switch(event) {
-         case EVENT_VSYNC:
-            if (mHwc && !mDebugForceFakeVSync) {
-                if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
-                     // NOTE: we use our own internal lock here because we have to
-                     // call into the HWC with the lock held, and we want to make
-                     // sure that even if HWC blocks (which it shouldn't), it won't
-                     // affect other threads.
-                     Mutex::Autolock _l(mEventControlLock);
-                     const int32_t eventBit = 1UL << event;
-                     const int32_t newValue = enabled ? eventBit : 0;
-                     const int32_t oldValue = mDisplayData[disp].events & eventBit;
-                     if (newValue != oldValue) {
-                         ATRACE_CALL();
-                         err = mHwc->eventControl(mHwc, disp, event, enabled);
-                         if (!err) {
-                             int32_t& events(mDisplayData[disp].events);
-                             events = (events & ~eventBit) | newValue;
-               }
-                      }
-                  }
-                  // error here should not happen -- not sure what we should
-                  // do if it does.
-                  ALOGE_IF(err, "eventControl(%d, %d) failed %s",
-                           event, enabled, strerror(-err));
-              }
-  
-              if (err == NO_ERROR && mVSyncThread != NULL) {
-                  mVSyncThread->setEnabled(enabled);
-              }
-              break;
-          case EVENT_ORIENTATION:
-              // Orientation event
-              if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0))
-                err = mHwc->eventControl(mHwc, disp, event, enabled);
-              break;
-          default:
-              ALOGW("eventControl got unexpected event %d (disp=%d en=%d)",
-                      event, disp, enabled);
-              break;
-#else
     switch(event) {
         case EVENT_VSYNC:
             if (mHwc && !mDebugForceFakeVSync && hwcHasVsyncEvent(mHwc)) {
@@ -708,7 +638,8 @@ void HWComposer::eventControl(int disp, int event, int enabled) {
                 // do if it does.
                 ALOGE_IF(err, "eventControl(%d, %d) failed %s",
                          event, enabled, strerror(-err));
-        }
+            }
+
             if (err == NO_ERROR && mVSyncThread != NULL) {
                 mVSyncThread->setEnabled(enabled);
             }
@@ -722,7 +653,6 @@ void HWComposer::eventControl(int disp, int event, int enabled) {
             ALOGW("eventControl got unexpected event %d (disp=%d en=%d)",
                     event, disp, enabled);
             break;
-#endif
     }
     return;
 }
@@ -910,7 +840,6 @@ status_t HWComposer::prepare() {
 
                     //ALOGD("prepare: %d, type=%d, handle=%p",
                     //        j, l.compositionType, l.handle);
-#endif
 
                     if (l.flags & HWC_SKIP_LAYER) {
                         l.compositionType = HWC_FRAMEBUFFER;
@@ -1132,16 +1061,6 @@ private:
         return NO_ERROR;
     }
 };
-#ifdef OLD_HWC_API
-// #if !HWC_REMOVE_DEPRECATED_VERSIONS
-/*
- * Concrete implementation of HWCLayer for HWC_DEVICE_API_VERSION_0_3
- * This implements the HWCLayer side of HWCIterableLayer.
- */
-class HWCLayerVersion0 : public Iterable<HWCLayerVersion0, hwc_layer_t> {
-public:
-    HWCLayerVersion0(hwc_layer_t* layer)
-        : Iterable<HWCLayerVersion0, hwc_layer_t>(layer) { }
 
 // #if !HWC_REMOVE_DEPRECATED_VERSIONS
 /*
@@ -1570,13 +1489,6 @@ void HWComposer::dump(String8& result) const {
         char buffer[SIZE];
         hwcDump(mHwc, buffer, SIZE);
         result.append(buffer);
-#else
-        if (mHwc && mHwc->dump) {
-            const size_t SIZE = 4096;
-            char buffer[SIZE];
-            mHwc->dump(mHwc, buffer, SIZE);
-            result.append(buffer);
-#endif
     }
 }
 
@@ -1823,3 +1735,4 @@ bool HWComposer::canUseTiledDR(int32_t id, Rect& unionDr ){
 #endif
 
 }; // namespace android
+
